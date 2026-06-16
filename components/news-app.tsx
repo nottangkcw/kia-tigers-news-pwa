@@ -1,7 +1,7 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import type { FormEvent, ReactNode } from "react";
+import { useEffect, useState } from "react";
 import {
   BarChart3,
   CalendarDays,
@@ -230,9 +230,16 @@ export function NewsApp() {
     await Promise.all([loadNews(selectedTeam), loadDashboard()]);
   }
 
-  const filteredLatest = useMemo(() => filterNews(data.latest, query), [data.latest, query]);
-  const filteredFeatured = useMemo(() => filterNews(data.featured, query), [data.featured, query]);
-  const filteredTeamNews = useMemo(() => filterNews(data.teamNews ?? [], query), [data.teamNews, query]);
+  function openNaverSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const trimmedQuery = query.trim();
+    const url = trimmedQuery
+      ? `https://search.naver.com/search.naver?query=${encodeURIComponent(trimmedQuery)}`
+      : "https://www.naver.com/";
+
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
 
   return (
     <main className="min-h-screen bg-[linear-gradient(180deg,#FFF8E6_0%,#FFFFFF_46%,#FFF5D1_100%)]">
@@ -259,28 +266,33 @@ export function NewsApp() {
             </div>
           </div>
 
-          <div className="mt-5 grid gap-3 sm:grid-cols-[1fr_auto]">
+          <form onSubmit={openNaverSearch} className="mt-5 grid gap-3 sm:grid-cols-[1fr_auto_auto]">
             <label className="relative block">
-              <span className="sr-only">뉴스 검색</span>
+              <span className="sr-only">네이버 검색</span>
               <Search className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="선수, 감독, 상대팀 검색"
+                placeholder="네이버 검색어"
                 className="h-13 border-white/20 bg-white pl-12 text-tiger-ink"
               />
             </label>
+            <Button type="submit" size="lg" variant="secondary" className="h-13 text-base">
+              <Search className="size-5" aria-hidden />
+              네이버 검색
+            </Button>
             <Button
+              type="button"
               size="lg"
-              variant="secondary"
+              variant="ghost"
               onClick={refreshAll}
               disabled={loading || dashboardLoading}
-              className="h-13 text-base"
+              className="h-13 bg-white/10 text-base text-white hover:bg-white/15"
             >
               <RefreshCw className={cn("size-5", (loading || dashboardLoading) && "animate-spin")} aria-hidden />
               새로고침
             </Button>
-          </div>
+          </form>
         </div>
       </section>
 
@@ -307,19 +319,19 @@ export function NewsApp() {
           {error ? <Notice tone="warn" message={error} /> : null}
           {data.freshness ? <Notice message={`${data.source ?? "뉴스 API"} 기준, ${data.freshness.rule}`} /> : null}
           {data.fallback ? <Notice message="실시간 뉴스 연결이 불안정해 바로 열 수 있는 공식/검색 링크를 보여드립니다." /> : null}
-          {loading && !data.latest.length ? <SkeletonList /> : <NewsGrid items={filteredFeatured.slice(0, 4)} featured />}
+          {loading && !data.latest.length ? <SkeletonList /> : <NewsGrid items={data.featured.slice(0, 4)} featured />}
         </section>
 
         <section className="mt-6">
-          <SectionHeader title={`${data.team.shortName} 구단 맞춤 기사`} count={filteredTeamNews.length} />
+          <SectionHeader title={`${data.team.shortName} 구단 맞춤 기사`} count={(data.teamNews ?? []).length} />
           {loading && data.latest.length > 0 ? <Notice message="새 뉴스를 확인하는 중입니다." /> : null}
-          {!loading && !filteredTeamNews.length ? <Notice message="오늘/어제 수집 기사 안에서 구단명이 뚜렷한 기사가 적어, 위 심층 링크로 최신 검색을 바로 열 수 있습니다." /> : null}
-          <NewsGrid items={filteredTeamNews} />
+          {!loading && !(data.teamNews ?? []).length ? <Notice message="오늘/어제 수집 기사 안에서 구단명이 뚜렷한 기사가 적어, 위 심층 링크로 최신 검색을 바로 열 수 있습니다." /> : null}
+          <NewsGrid items={data.teamNews ?? []} />
         </section>
 
         <section className="mt-6">
-          <SectionHeader title="전체 KBO 최신 뉴스" count={filteredLatest.length} />
-          <NewsGrid items={filteredLatest} />
+          <SectionHeader title="전체 KBO 최신 뉴스" count={data.latest.length} />
+          <NewsGrid items={data.latest} />
         </section>
 
         <section className="mt-7 pb-8">
@@ -392,15 +404,6 @@ function DeepLinkStrip({ team, links }: { team: TeamConfig; links: NewsDeepLink[
         ))}
       </div>
     </section>
-  );
-}
-
-function filterNews(items: NewsItem[], query: string) {
-  const normalizedQuery = query.trim().toLowerCase();
-  if (!normalizedQuery) return items;
-
-  return items.filter((item) =>
-    [item.title, item.summary, item.source, item.tag].join(" ").toLowerCase().includes(normalizedQuery),
   );
 }
 
