@@ -15,6 +15,14 @@ const KBO_URLS = {
   pitcher: `${KBO_BASE_URL}/Record/Player/PitcherBasic/Basic1.aspx`,
 };
 
+const NAVER_SCHEDULE_API = "https://api-gw.sports.naver.com/schedule/games";
+const NAVER_MOBILE_URLS = {
+  schedule: "https://m.sports.naver.com/kbaseball/index",
+  teamRank: "https://m.sports.naver.com/kbaseball/record/kbo?seasonCode=2026&tab=teamRank",
+  hitter: "https://m.sports.naver.com/kbaseball/record/kbo?seasonCode=2026&tab=hitter&teamCode=HT",
+  pitcher: "https://m.sports.naver.com/kbaseball/record/kbo?seasonCode=2026&tab=pitcher&teamCode=HT",
+};
+
 const KBO_TEAM_NAMES = ["KIA", "LG", "두산", "삼성", "롯데", "한화", "SSG", "KT", "NC", "키움"];
 const KBO_TEAM_IDS = ["HT", "LG", "OB", "SS", "LT", "HH", "SK", "KT", "NC", "WO"];
 
@@ -36,10 +44,15 @@ type ScheduleGame = {
   time: string;
   awayTeam: string;
   homeTeam: string;
+  awayScore: string | null;
+  homeScore: string | null;
+  scoreLabel: string;
+  hasScore: boolean;
   stadium: string;
   status: string;
   gameCenterUrl: string;
   starterNote: string;
+  scoreSource: string;
 };
 
 type KiaPlayer = {
@@ -59,6 +72,19 @@ type ScheduleCell = string | { Text?: string };
 
 type ScheduleResponse = {
   rows?: Array<{ row?: ScheduleCell[] }>;
+};
+
+type NaverScheduleGame = {
+  gameId: string;
+  gameDateTime: string;
+  stadium?: string;
+  statusCode?: string;
+  statusInfo?: string;
+  homeTeamName: string;
+  homeTeamScore: number;
+  awayTeamName: string;
+  awayTeamScore: number;
+  cancel?: boolean;
 };
 
 function stripHtml(value = "") {
@@ -91,6 +117,7 @@ function getKstParts(now = new Date()) {
     month,
     day,
     dateLabel: `${month}.${day}`,
+    isoDate: `${year}-${month}-${day}`,
   };
 }
 
@@ -167,16 +194,73 @@ async function postSchedule(teamId = "") {
   return (await response.json()) as ScheduleResponse;
 }
 
-function parseGameTeams(matchupHtml = "") {
+async function fetchNaverTodayGames() {
+  const { isoDate, dateLabel } = getKstParts();
+  const params = new URLSearchParams({
+    fields:
+      "basic,superCategoryId,categoryName,gameId,gameDateTime,stadium,statusCode,statusInfo,homeTeamName,homeTeamScore,awayTeamName,awayTeamScore",
+    upperCategoryId: "kbaseball",
+    categoryId: "kbo",
+    fromDate: isoDate,
+    toDate: isoDate,
+    size: "100",
+  });
+
+  const response = await fetch(`${NAVER_SCHEDULE_API}?${params.toString()}`, {
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+      Referer: "https://sports.news.naver.com/kbaseball/schedule/index",
+      "User-Agent": "Mozilla/5.0 kia-tigers-news-pwa/0.1",
+    },
+  });
+
+  if (!response.ok) throw new Error(`Naver score request failed: ${response.status}`);
+
+  const data = (await response.json()) as { result?: { games?: NaverScheduleGame[] } };
+
+  return (data.result?.games ?? [])
+    .filter((game) => game.awayTeamName && game.homeTeamName)
+    .map<ScheduleGame>((game, index) => {
+      const hasScore = game.statusCode === "STARTED" || game.statusCode === "RESULT";
+      const time = game.gameDateTime.slice(11, 16);
+      const status = game.cancel ? "취소" : game.statusInfo || (hasScore ? "진행중" : "예정");
+
+      return {
+        id: game.gameId || `${dateLabel}-${time}-${game.awayTeamName}-${game.homeTeamName}-${index}`,
+        dateLabel,
+        time,
+        awayTeam: game.awayTeamName,
+        homeTeam: game.homeTeamName,
+        awayScore: hasScore ? String(game.awayTeamScore) : null,
+        homeScore: hasScore ? String(game.homeTeamScore) : null,
+        scoreLabel: hasScore ? `${game.awayTeamScore} : ${game.homeTeamScore}` : "경기 전",
+        hasScore,
+        stadium: game.stadium ?? "",
+        status,
+        gameCenterUrl: KBO_URLS.schedule,
+        starterNote: "선발투수는 KBO 경기센터에서 경기별로 확인",
+        scoreSource: "Naver Sports live score",
+      };
+    });
+}
+
+function parseGameMatchup(matchupHtml = "") {
   const html = String(matchupHtml);
-  const tokens = Array.from(html.matchAll(/<span[^>]*>([\s\S]*?)<\/span>/gi))
-    .map((match) => stripHtml(match[1]))
-    .filter(Boolean);
+  const spans = Array.from(html.matchAll(/<span[^>]*>([\s\S]*?)<\/span>/gi)).map((match) =>
+    stripHtml(match[1]),
+  );
+  const tokens = spans.filter(Boolean);
   const teams = tokens.filter((token) => KBO_TEAM_NAMES.includes(token));
+  const scores = tokens.filter((token) => /^\d+$/.test(token));
+  const awayScore = scores[0] ?? null;
+  const homeScore = scores[1] ?? null;
 
   return {
     awayTeam: teams[0] ?? "",
     homeTeam: teams[teams.length - 1] ?? "",
+    awayScore,
+    homeScore,
   };
 }
 
@@ -191,10 +275,14 @@ function parseScheduleGame(cells: ScheduleCell[], index: number): ScheduleGame |
 
   const dateLabel = stripHtml(getScheduleCellText(cells[0])).slice(0, 5);
   const time = stripHtml(getScheduleCellText(cells[1]));
-  const { awayTeam, homeTeam } = parseGameTeams(getScheduleCellText(cells[2]));
+  const matchup = parseGameMatchup(getScheduleCellText(cells[2]));
+  const { awayTeam, homeTeam, awayScore, homeScore } = matchup;
+  const actionText = stripHtml(getScheduleCellText(cells[3]));
   const href = getScheduleCellText(cells[3]).match(/href=['"]([^'"]+)['"]/i)?.[1] ?? "";
   const stadium = stripHtml(getScheduleCellText(cells[7]));
-  const status = stripHtml(getScheduleCellText(cells[8])) || "예정";
+  const memo = stripHtml(getScheduleCellText(cells[8]));
+  const hasScore = awayScore !== null && homeScore !== null;
+  const status = hasScore ? (actionText.includes("리뷰") ? "종료" : "진행중") : memo || "예정";
 
   if (!dateLabel || !awayTeam || !homeTeam) return null;
 
@@ -204,18 +292,24 @@ function parseScheduleGame(cells: ScheduleCell[], index: number): ScheduleGame |
     time,
     awayTeam,
     homeTeam,
+    awayScore,
+    homeScore,
+    scoreLabel: hasScore ? `${awayScore} : ${homeScore}` : "경기 전",
+    hasScore,
     stadium,
     status,
     gameCenterUrl: absoluteKboUrl(href),
     starterNote: "선발투수는 KBO 경기센터에서 경기별로 확인",
+    scoreSource: "KBO official schedule",
   };
 }
 
 async function fetchSchedule() {
   const { dateLabel } = getKstParts();
-  const [teamSchedules, kiaSchedule] = await Promise.all([
+  const [teamSchedules, kiaSchedule, naverTodayGames] = await Promise.all([
     Promise.all(KBO_TEAM_IDS.map((teamId) => postSchedule(teamId))),
     postSchedule(KIA_TEAM_ID),
+    fetchNaverTodayGames().catch(() => [] as ScheduleGame[]),
   ]);
 
   const seenGames = new Set<string>();
@@ -235,9 +329,12 @@ async function fetchSchedule() {
     .map((item, index) => parseScheduleGame(item.row ?? [], index))
     .filter((item): item is ScheduleGame => Boolean(item));
 
+  const liveTodayGames = naverTodayGames.length ? naverTodayGames : todayGames;
+
   return {
-    todayGames,
+    todayGames: liveTodayGames,
     kiaGame:
+      liveTodayGames.find((game) => game.awayTeam === "KIA" || game.homeTeam === "KIA") ??
       kiaGames.find((game) => game.dateLabel === dateLabel) ??
       kiaGames.find((game) => game.dateLabel >= dateLabel) ??
       null,
@@ -248,13 +345,14 @@ function getFirstPlayerId(rowHtml: string) {
   return rowHtml.match(/playerId=(\d+)/i)?.[1] ?? "";
 }
 
-function buildPlayerLinks(name: string, id: string, type: KiaPlayer["type"]) {
-  const detailPath =
-    type === "hitter" ? `/Record/Player/HitterDetail/Total.aspx?playerId=${id}` : `/Record/Player/PitcherDetail/Total.aspx?playerId=${id}`;
+function buildPlayerLinks(name: string, id: string, type: "hitter" | "pitcher") {
   const query = encodeURIComponent(`KIA 타이거즈 ${name}`);
+  const detailPath = id
+    ? `/Record/Player/${type === "hitter" ? "HitterDetail/Basic" : "PitcherDetail/Basic"}.aspx?playerId=${id}`
+    : "";
 
   return {
-    kboUrl: id ? absoluteKboUrl(detailPath) : type === "hitter" ? KBO_URLS.hitter : KBO_URLS.pitcher,
+    kboUrl: detailPath ? absoluteKboUrl(detailPath) : type === "hitter" ? KBO_URLS.hitter : KBO_URLS.pitcher,
     namuUrl: `https://namu.wiki/w/${encodeURIComponent(name)}`,
     newsUrl: `https://search.naver.com/search.naver?where=news&sort=1&query=${query}`,
   };
@@ -320,12 +418,12 @@ export async function GET() {
 
   return NextResponse.json({
     updatedAt: new Date().toISOString(),
-    source: "KBO official records",
+    source: "KBO official records + Naver Sports live scoreboard",
     links: {
-      schedule: KBO_URLS.schedule,
-      teamRank: KBO_URLS.teamRank,
-      hitter: KBO_URLS.hitter,
-      pitcher: KBO_URLS.pitcher,
+      schedule: NAVER_MOBILE_URLS.schedule,
+      teamRank: NAVER_MOBILE_URLS.teamRank,
+      hitter: NAVER_MOBILE_URLS.hitter,
+      pitcher: NAVER_MOBILE_URLS.pitcher,
     },
     standings,
     schedule,

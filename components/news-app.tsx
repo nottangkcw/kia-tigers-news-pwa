@@ -1,6 +1,6 @@
 "use client";
 
-import type { FormEvent, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import {
   BarChart3,
@@ -66,10 +66,15 @@ type ScheduleGame = {
   time: string;
   awayTeam: string;
   homeTeam: string;
+  awayScore: string | null;
+  homeScore: string | null;
+  scoreLabel: string;
+  hasScore: boolean;
   stadium: string;
   status: string;
   gameCenterUrl: string;
   starterNote: string;
+  scoreSource: string;
 };
 
 type KiaPlayer = {
@@ -190,6 +195,14 @@ export function NewsApp() {
     void loadNews(selectedTeam);
   }, [selectedTeam]);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (navigator.onLine) void loadDashboard({ silent: true });
+    }, 45_000);
+
+    return () => window.clearInterval(timer);
+  }, []);
+
   async function loadNews(team: TeamKey) {
     setLoading(true);
     setError("");
@@ -208,8 +221,8 @@ export function NewsApp() {
     }
   }
 
-  async function loadDashboard() {
-    setDashboardLoading(true);
+  async function loadDashboard(options: { silent?: boolean } = {}) {
+    if (!options.silent) setDashboardLoading(true);
     setDashboardError("");
 
     try {
@@ -222,23 +235,12 @@ export function NewsApp() {
     } catch {
       setDashboardError("KBO 공식 기록을 불러오지 못했습니다. 저장된 기록이 있으면 그대로 보여드립니다.");
     } finally {
-      setDashboardLoading(false);
+      if (!options.silent) setDashboardLoading(false);
     }
   }
 
   async function refreshAll() {
     await Promise.all([loadNews(selectedTeam), loadDashboard()]);
-  }
-
-  function openNaverSearch(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    const trimmedQuery = query.trim();
-    const url = trimmedQuery
-      ? `https://search.naver.com/search.naver?query=${encodeURIComponent(trimmedQuery)}`
-      : "https://www.naver.com/";
-
-    window.open(url, "_blank", "noopener,noreferrer");
   }
 
   return (
@@ -266,20 +268,27 @@ export function NewsApp() {
             </div>
           </div>
 
-          <form onSubmit={openNaverSearch} className="mt-5 grid gap-3 sm:grid-cols-[1fr_auto_auto]">
+          <form
+            action="https://www.yagoonara.com/ask"
+            method="get"
+            target="_blank"
+            rel="noreferrer"
+            className="mt-5 grid gap-3 sm:grid-cols-[1fr_auto_auto]"
+          >
             <label className="relative block">
-              <span className="sr-only">네이버 검색</span>
+              <span className="sr-only">야구나라 검색</span>
               <Search className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-muted-foreground" />
               <Input
+                name="q"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="네이버 검색어"
+                placeholder="야구나라 검색어"
                 className="h-13 border-white/20 bg-white pl-12 text-tiger-ink"
               />
             </label>
             <Button type="submit" size="lg" variant="secondary" className="h-13 text-base">
               <Search className="size-5" aria-hidden />
-              네이버 검색
+              야구나라 검색
             </Button>
             <Button
               type="button"
@@ -432,13 +441,16 @@ function GamePanel({ dashboard }: { dashboard: KboDashboardResponse }) {
           <div className="mt-3 rounded-md bg-tiger-ink p-4 text-white">
             <div className="flex items-center justify-between gap-3">
               <Badge className="bg-tiger-gold text-tiger-ink hover:bg-tiger-gold">{kiaGame.dateLabel} {kiaGame.time}</Badge>
-              <span className="text-sm font-semibold text-white/75">{kiaGame.stadium}</span>
+              <span className="text-sm font-semibold text-white/75">{kiaGame.stadium} · {kiaGame.status}</span>
             </div>
-            <div className="mt-4 flex items-center justify-center gap-3 text-center text-2xl font-black">
-              <span>{kiaGame.awayTeam}</span>
-              <span className="text-tiger-gold">vs</span>
-              <span>{kiaGame.homeTeam}</span>
+            <div className="mt-4 grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-center">
+              <TeamScore name={kiaGame.awayTeam} score={kiaGame.awayScore} />
+              <span className="text-xl font-black text-tiger-gold">vs</span>
+              <TeamScore name={kiaGame.homeTeam} score={kiaGame.homeScore} />
             </div>
+            <p className="mt-3 text-center text-sm font-semibold text-white/70">
+              {kiaGame.hasScore ? `실시간 스코어 자동 갱신 중 · ${kiaGame.scoreSource}` : "경기 시작 전"}
+            </p>
             <div className="mt-4 grid gap-2 sm:grid-cols-2">
               <Button asChild variant="secondary" className="h-11">
                 <a href={kiaGame.gameCenterUrl} target="_blank" rel="noreferrer">
@@ -472,12 +484,23 @@ function GamePanel({ dashboard }: { dashboard: KboDashboardResponse }) {
   );
 }
 
+function TeamScore({ name, score }: { name: string; score: string | null }) {
+  return (
+    <div className="min-w-0">
+      <p className="truncate text-lg font-black">{name}</p>
+      <p className="mt-1 text-4xl font-black text-tiger-gold">{score ?? "-"}</p>
+    </div>
+  );
+}
+
 function GameRow({ game }: { game: ScheduleGame }) {
   return (
     <a href={game.gameCenterUrl} target="_blank" rel="noreferrer" className="grid grid-cols-[58px_1fr_auto] items-center gap-2 rounded-md border bg-card px-3 py-2 text-sm font-semibold hover:border-tiger-red/35">
       <span className="text-muted-foreground">{game.time}</span>
-      <span className="break-keep">{game.awayTeam} vs {game.homeTeam}</span>
-      <span className="text-muted-foreground">{game.stadium}</span>
+      <span className="break-keep">
+        {game.awayTeam} {game.hasScore ? game.awayScore : ""} vs {game.hasScore ? game.homeScore : ""} {game.homeTeam}
+      </span>
+      <span className="text-right text-muted-foreground">{game.stadium}</span>
     </a>
   );
 }
